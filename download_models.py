@@ -60,7 +60,18 @@ print("\n[4/4] Downloading silero-vad model...")
 try:
     vad_model = load_silero_vad()
     print("  ✅ silero-vad model downloaded.")
+    print("  ✅ silero-vad model downloaded.")
     del vad_model
+except Exception as e:
+    print(f"  ❌ Failed: {e}")
+    raise
+
+# ── 5. Whisper Transcription Model ────────────────────────────
+print("\n[5/5] WARMING Whisper large-v3 ASR model...")
+try:
+    asr_model = whisperx.load_model("large-v3", device="cpu", compute_type="float32", download_root=os.environ.get("TORCH_HOME", "/app/torch_cache"))
+    print("  ✅ Whisper large-v3 downloaded.")
+    del asr_model
 except Exception as e:
     print(f"  ❌ Failed: {e}")
     raise
