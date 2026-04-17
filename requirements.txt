@@ -1,0 +1,8 @@
+runpod
+torch>=2.0.0
+torchaudio
+whisperx
+transformers
+num2words
+requests
+silero-vad
