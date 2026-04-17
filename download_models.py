@@ -12,7 +12,6 @@ import torch
 import torchaudio
 import whisperx
 import nltk
-from silero_vad import load_silero_vad
 
 print("=" * 60)
 print("Pre-downloading models for WhisperX Stage 2 Forced Aligner")
@@ -55,16 +54,6 @@ except Exception as e:
     print(f"  ❌ Failed: {e}")
     raise
 
-# ── 4. Silero VAD ─────────────────────────────────────────────
-print("\n[4/4] Downloading silero-vad model...")
-try:
-    vad_model = load_silero_vad()
-    print("  ✅ silero-vad model downloaded.")
-    print("  ✅ silero-vad model downloaded.")
-    del vad_model
-except Exception as e:
-    print(f"  ❌ Failed: {e}")
-    raise
 
 # ── 5. Whisper Transcription Model ────────────────────────────
 print("\n[5/5] WARMING Whisper large-v3 ASR model...")

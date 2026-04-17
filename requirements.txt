@@ -1,8 +1,6 @@
 runpod
 transformers
-num2words
 requests
-silero-vad
 nltk
 pandas
 
