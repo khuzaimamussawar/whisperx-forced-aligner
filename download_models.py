@@ -14,7 +14,7 @@ import whisperx
 import nltk
 
 print("=" * 60)
-print("Pre-downloading models for WhisperX Stage 2 Forced Aligner")
+print("Pre-downloading models for Whisper X Transcription + Alignment")
 print("=" * 60)
 
 # ── 1. torchaudio WAV2VEC2_ASR_BASE_960H (English alignment) ─
@@ -55,8 +55,8 @@ except Exception as e:
     raise
 
 
-# ── 5. Whisper Transcription Model ────────────────────────────
-print("\n[5/5] WARMING Whisper large-v3 ASR model...")
+# 4. Whisper Transcription Model
+print("\n[4/4] Warming Whisper large-v3 ASR model...")
 try:
     asr_model = whisperx.load_model("large-v3", device="cpu", compute_type="float32", download_root=os.environ.get("TORCH_HOME", "/app/torch_cache"))
     print("  ✅ Whisper large-v3 downloaded.")

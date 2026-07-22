@@ -4,7 +4,6 @@ RunPod Serverless Handler
 
 Input:
   audio_url   : string  — public URL to audio file (mp3/wav/m4a)
-  segments    : array   — [{text, start, end}] from SceneBuilder script (IGNORED during transcription, retained for backwards compat)
   language    : string  — default "en"
 
 Output:
@@ -26,6 +25,7 @@ import whisperx
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # `float16` is typically much faster and perfectly safe on RunPod GPUs.
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "float32"
+ASR_BATCH_SIZE = int(os.environ.get("WHISPER_BATCH_SIZE", "8"))
 
 print(f"[INIT] Using device: {DEVICE}")
 
@@ -88,28 +88,34 @@ def handler(job):
     inp = job.get("input", {})
 
     audio_url    = inp.get("audio_url")
-    language     = inp.get("language", "en")
+    language     = str(inp.get("language", "en")).split("-", 1)[0].lower()
 
     # ── Validate ──────────────────────────────
     if not audio_url:
         return {"error": "audio_url is required"}
 
-    # ── 1. Download audio ────────────────────
+    # 1. Download audio
+    audio_path = None
     try:
         audio_path = download_audio(audio_url)
         audio = whisperx.load_audio(audio_path)
         audio_duration = round(len(audio) / 16000, 3)
-        os.unlink(audio_path)
         print(f"[ALIGN] Audio loaded: {audio_duration}s")
     except Exception as e:
         return {"error": f"Failed to load audio: {e}"}
+    finally:
+        if audio_path and os.path.exists(audio_path):
+            os.unlink(audio_path)
 
     # ── 2. Whisper Transcription (Standard Pipeline) ────
     try:
         print("[ALIGN] Running Whisper Transcription...")
-        # batch_size=16 utilizes VRAM heavily for fast processing of long audio
-        transcribe_result = _asr_model.transcribe(audio, batch_size=16, language=language)
-        print(f"[ALIGN] Transcription done. Segments found: {len(transcribe_result.get('segments', []))}")
+        # The default batch size is conservative for 16 GB serverless GPUs.
+        transcribe_result = _asr_model.transcribe(audio, batch_size=ASR_BATCH_SIZE, language=language)
+        transcript_segments = transcribe_result.get("segments", [])
+        if not transcript_segments:
+            return {"error": "No speech was detected in the audio"}
+        print(f"[ALIGN] Transcription done. Segments found: {len(transcript_segments)}")
     except Exception as e:
         return {"error": f"Transcription failed: {e}"}
 
@@ -125,7 +131,7 @@ def handler(job):
             )
 
         result = whisperx.align(
-            transcribe_result["segments"],
+            transcript_segments,
             align_model,
             align_meta,
             audio,
@@ -140,8 +146,11 @@ def handler(job):
     aligned_words = []
     for seg in result.get("segments", []):
         for w in seg.get("words", []):
+            word_text = w.get("word", "").strip()
+            if not word_text:
+                continue
             aligned_words.append({
-                "word":  w.get("word", ""),
+                "word":  word_text,
                 "start": w.get("start"),
                 "end":   w.get("end")
             })

@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────────
-# WhisperX Stage 2 — Forced Alignment Only
+# Whisper X - Transcription + Forced Alignment
 # RunPod Serverless Docker Image
 #
 # Base: NVIDIA CUDA 12.4.1 Ubuntu 22.04 Setup
-# Models baked in: wav2vec2 English, silero-vad
+# Models baked in: Whisper large-v3, wav2vec2 English
 # Dependencies baked in: Python 3.11, PyTorch 2.4.0 (cu124)
 # ─────────────────────────────────────────────────────────────────
 
