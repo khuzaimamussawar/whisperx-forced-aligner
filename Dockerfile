@@ -50,6 +50,9 @@ COPY handler.py .
 # This runs during build — models are saved to HF & torch caches
 ENV HF_HOME=/app/hf_cache
 ENV TORCH_HOME=/app/torch_cache
+ENV DOWNLOAD_CONCURRENCY=20
+ENV FFMPEG_CONCURRENCY=5
+ENV FFMPEG_TIMEOUT_SECONDS=900
 
 RUN python download_models.py
 

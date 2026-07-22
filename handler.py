@@ -3,8 +3,9 @@ WhisperX — Transcription + Forced Alignment
 RunPod Serverless Handler
 
 Input:
-  audio_url   : string  — public URL to audio file (mp3/wav/m4a)
-  language    : string  — default "en"
+  source_records : array - ordered timeline clips with source slices + keep_ranges
+  audio_url      : string - legacy single-audio fallback
+  language       : string - default "en"
 
 Output:
   words       : array   — [{word, start, end}] — perfectly transcribed and word-level aligned outputs
@@ -14,10 +15,13 @@ Output:
 
 import os
 import tempfile
+from pathlib import Path
 import requests
 import runpod
 import torch
 import whisperx
+
+from audio_pipeline import build_canonical_wav
 
 # ─────────────────────────────────────────────
 # GLOBAL MODEL LOAD (once, stays hot between calls)
@@ -51,22 +55,15 @@ print("[INIT] All models ready. Handler starting.")
 # HELPERS
 # ─────────────────────────────────────────────
 
-def download_audio(url: str) -> str:
-    """Download audio from URL to a temp file. Returns local path."""
-    ext = ".mp3"
-    for suffix in [".wav", ".m4a", ".ogg", ".flac"]:
-        if url.lower().endswith(suffix):
-            ext = suffix
-            break
-
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    resp = requests.get(url, timeout=60, stream=True)
-    resp.raise_for_status()
-    for chunk in resp.iter_content(chunk_size=8192):
-        tmp.write(chunk)
-    tmp.flush()
-    tmp.close()
-    return tmp.name
+def download_audio(url: str, destination: Path) -> Path:
+    """Download the legacy single-audio input into the current job workspace."""
+    with requests.get(url, timeout=(20, 180), stream=True) as response:
+        response.raise_for_status()
+        with destination.open("wb") as output:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+    return destination
 
 
 def interpolate_missing_timestamps(words: list) -> list:
@@ -87,25 +84,42 @@ def interpolate_missing_timestamps(words: list) -> list:
 def handler(job):
     inp = job.get("input", {})
 
-    audio_url    = inp.get("audio_url")
-    language     = str(inp.get("language", "en")).split("-", 1)[0].lower()
+    source_records = inp.get("source_records")
+    audio_url = inp.get("audio_url")
+    language = str(inp.get("language", "en")).split("-", 1)[0].lower()
 
-    # ── Validate ──────────────────────────────
-    if not audio_url:
-        return {"error": "audio_url is required"}
+    if not source_records and not audio_url:
+        return {"error": "source_records or audio_url is required"}
 
-    # 1. Download audio
-    audio_path = None
+    # 1. Build one canonical mono 16 kHz WAV, then load it once for WhisperX.
     try:
-        audio_path = download_audio(audio_url)
-        audio = whisperx.load_audio(audio_path)
-        audio_duration = round(len(audio) / 16000, 3)
-        print(f"[ALIGN] Audio loaded: {audio_duration}s")
+        with tempfile.TemporaryDirectory(prefix="whisperx-job-") as job_dir:
+            work_dir = Path(job_dir)
+            if source_records:
+                audio_path, audio_duration, source_record_count = build_canonical_wav(
+                    source_records, work_dir
+                )
+            else:
+                audio_path = download_audio(audio_url, work_dir / "legacy-audio")
+                audio_duration = None
+                source_record_count = 1
+
+            audio = whisperx.load_audio(str(audio_path))
+            loaded_duration = round(len(audio) / 16000, 3)
+            if audio_duration is None:
+                audio_duration = loaded_duration
+            elif abs(audio_duration - loaded_duration) > 0.05:
+                print(
+                    f"[CANONICAL] Duration corrected from {audio_duration}s "
+                    f"to decoded duration {loaded_duration}s"
+                )
+                audio_duration = loaded_duration
+            print(
+                f"[ALIGN] Canonical audio loaded: {audio_duration}s, "
+                f"records={source_record_count}"
+            )
     except Exception as e:
-        return {"error": f"Failed to load audio: {e}"}
-    finally:
-        if audio_path and os.path.exists(audio_path):
-            os.unlink(audio_path)
+        return {"error": f"Failed to build canonical audio: {e}"}
 
     # ── 2. Whisper Transcription (Standard Pipeline) ────
     try:
@@ -175,7 +189,8 @@ def handler(job):
     return {
         "words":      output_words,
         "duration":   audio_duration,
-        "word_count": real_word_count
+        "word_count": real_word_count,
+        "source_record_count": source_record_count
     }
 
 

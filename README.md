@@ -1,8 +1,17 @@
 # whisperx-forced-aligner
 
-Whisper X transcription and forced alignment as a RunPod serverless endpoint.
+RunPod serverless pipeline that assembles one canonical timeline WAV, transcribes it with Whisper large-v3, and runs WhisperX forced alignment once.
 
-The endpoint accepts an audio URL, transcribes it with Whisper large-v3, then uses WhisperX alignment to return word-level timestamps. It does not use SceneBuilder script text as an alignment source.
+## Processing pipeline
+
+1. Receive ordered timeline `source_records` from SceneBuilder.
+2. Download unique R2 audio URLs with up to 20 concurrent downloads.
+3. Run 4-6 concurrent FFmpeg jobs. Each job slices its source audio, applies `keep_ranges`, and outputs mono 16 kHz PCM.
+4. Append every processed record, in final timeline order, through one canonical-WAV writer.
+5. Run one Whisper transcription and one WhisperX alignment job on that completed WAV.
+6. Return the same flat `{word, start, end}` timestamps consumed by SceneBuilder today.
+
+The service never runs WhisperX once per clip. It always aligns the single completed canonical WAV.
 
 ## API
 
@@ -11,16 +20,31 @@ The endpoint accepts an audio URL, transcribes it with Whisper large-v3, then us
 ```json
 {
   "input": {
-    "audio_url": "https://your-cdn.com/audio.mp3",
+    "source_records": [
+      {
+        "clip_id": "scene-1",
+        "order": 0,
+        "sources": [
+          {
+            "url": "https://r2.example.com/audio-a.wav",
+            "start": 12.5,
+            "end": 19.75
+          }
+        ],
+        "keep_ranges": [
+          { "start": 0.0, "end": 2.4 },
+          { "start": 3.1, "end": 7.25 }
+        ]
+      }
+    ],
     "language": "en"
   }
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `audio_url` | string | Yes | - | Public URL to audio (`mp3`, `wav`, `m4a`, `ogg`, or `flac`) |
-| `language` | string | No | `en` | Language code for Whisper transcription and WhisperX alignment |
+`keep_ranges` are optional and are relative to the record after its source slices have been joined. A record may contain multiple `sources`; those slices are joined in their listed order before its `keep_ranges` are applied. Records are written to the canonical WAV by `order`, with input position used as the stable tie-breaker.
+
+The old `audio_url` input remains available as a single-file compatibility fallback, but SceneBuilder's Whisper X path uses `source_records`.
 
 ### Output
 
@@ -28,44 +52,33 @@ The endpoint accepts an audio URL, transcribes it with Whisper large-v3, then us
 {
   "words": [
     { "word": "William", "start": 0.1, "end": 0.42 },
-    { "word": "the", "start": 0.42, "end": 0.55 },
-    { "word": "Conqueror", "start": 0.55, "end": 0.98 }
+    { "word": "the", "start": 0.42, "end": 0.55 }
   ],
   "duration": 10.24,
-  "word_count": 3
+  "word_count": 2,
+  "source_record_count": 200
 }
 ```
 
-Words without a native alignment timestamp are interpolated from neighboring aligned words. If transcription, alignment, or audio loading fails, the endpoint returns an `error` field; SceneBuilder treats that response as a failed sync and does not overwrite existing alignment data.
+## Concurrency settings
 
-## Deploy to RunPod
+| Variable | Default | Behavior |
+|---|---:|---|
+| `DOWNLOAD_CONCURRENCY` | `20` | Clamped to a maximum of 20 concurrent unique-source downloads |
+| `FFMPEG_CONCURRENCY` | `5` | Clamped to the required 4-6 concurrent processing jobs |
+| `FFMPEG_TIMEOUT_SECONDS` | `900` | Timeout for one record's FFmpeg job |
+| `WHISPER_BATCH_SIZE` | `8` | Whisper large-v3 transcription batch size |
 
-1. Add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets. The GitHub Actions workflow builds and pushes the image whenever `main` changes.
-2. Create a RunPod Serverless endpoint from the pushed image. Use a GPU with at least 16 GB of VRAM.
-3. Put the endpoint ID in SceneBuilder's `RUNPOD_WHISPERX_ENDPOINT_ID` secret and its API key in `RUNPOD_API_KEY`.
+## Deployment
 
-The service keeps the models loaded while a worker is warm. Set `WHISPER_BATCH_SIZE` in the endpoint environment if needed; it defaults to `8` to fit typical 16 GB serverless GPUs.
+The Docker image already includes FFmpeg. GitHub Actions builds and publishes the image when `main` changes. Configure these repository secrets:
 
-## SceneBuilder request shape
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
 
-```js
-await fetch(`https://api.runpod.ai/v2/${endpointId}/run`, {
-  method: 'POST',
-  headers: {
-    Authorization: `Bearer ${apiKey}`,
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    input: { audio_url: audioUrl, language: 'en' }
-  })
-});
-```
+Configure SceneBuilder/RunPod with:
 
-## Models baked into the image
+- `RUNPOD_WHISPERX_ENDPOINT_ID`
+- `RUNPOD_API_KEY`
 
-| Model | Purpose |
-|---|---|
-| Whisper large-v3 | Audio transcription |
-| wav2vec2 English alignment model | Word-level forced alignment |
-
-The Docker build pre-downloads the English alignment model, Whisper large-v3, and the NLTK tokenizer required by WhisperX alignment.
+The image pre-downloads Whisper large-v3, the English wav2vec2 alignment model, and the NLTK tokenizer required by WhisperX.
