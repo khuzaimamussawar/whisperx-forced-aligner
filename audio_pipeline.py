@@ -42,7 +42,11 @@ def normalize_source_records(raw_records: list) -> list:
         if not isinstance(raw_record, dict):
             raise ValueError(f"source_records[{input_index}] must be an object")
 
-        raw_sources = raw_record.get("sources")
+        raw_sources = (
+            raw_record.get("sources")
+            or raw_record.get("audio_sources")
+            or raw_record.get("audioSources")
+        )
         if not isinstance(raw_sources, list) or not raw_sources:
             raise ValueError(f"source_records[{input_index}].sources must be non-empty")
 
@@ -67,7 +71,11 @@ def normalize_source_records(raw_records: list) -> list:
             sources.append({"url": url, "start": start, "end": end})
 
         clip_duration = sum(source["end"] - source["start"] for source in sources)
-        raw_keep_ranges = raw_record.get("keep_ranges") or []
+        raw_keep_ranges = (
+            raw_record.get("keep_ranges")
+            if raw_record.get("keep_ranges") is not None
+            else raw_record.get("keepRanges", [])
+        )
         if not isinstance(raw_keep_ranges, list):
             raise ValueError(f"source_records[{input_index}].keep_ranges must be an array")
         keep_ranges = []
@@ -85,9 +93,19 @@ def normalize_source_records(raw_records: list) -> list:
             raise ValueError(f"source_records[{input_index}] has no valid keep_ranges")
 
         order = _finite_number(raw_record.get("order", input_index), "record order")
+        raw_clip_id = raw_record.get("clip_id")
+        if raw_clip_id is None or not str(raw_clip_id).strip():
+            raw_clip_id = raw_record.get("id")
+        if raw_clip_id is None or not str(raw_clip_id).strip():
+            raw_clip_id = raw_record.get("clipId")
+        clip_id = (
+            str(raw_clip_id).strip()
+            if raw_clip_id is not None and str(raw_clip_id).strip()
+            else f"order-{order:g}"
+        )
         normalized.append(
             {
-                "clip_id": str(raw_record.get("clip_id", input_index)),
+                "clip_id": clip_id,
                 "order": order,
                 "input_index": input_index,
                 "sources": sources,

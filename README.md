@@ -44,6 +44,8 @@ The service never runs WhisperX once per clip. It always aligns the single compl
 
 `keep_ranges` are optional and are relative to the record after its source slices have been joined. A record may contain multiple `sources`; those slices are joined in their listed order before its `keep_ranges` are applied. Records are written to the canonical WAV by `order`, with input position used as the stable tie-breaker.
 
+SceneBuilder always forwards the canonical snake_case contract shown above. For compatibility with older callers, the input boundary also accepts clip_id, id, or clipId and falls back to order when no identifier exists. It also accepts sourceRecords, audioSources, and keepRanges aliases, then normalizes them before processing.
+
 The old `audio_url` input remains available as a single-file compatibility fallback, but SceneBuilder's Whisper X path uses `source_records`.
 
 ### Output

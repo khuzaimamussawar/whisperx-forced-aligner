@@ -84,7 +84,7 @@ def interpolate_missing_timestamps(words: list) -> list:
 def handler(job):
     inp = job.get("input", {})
 
-    source_records = inp.get("source_records")
+    source_records = inp.get("source_records") or inp.get("sourceRecords")
     audio_url = inp.get("audio_url")
     language = str(inp.get("language", "en")).split("-", 1)[0].lower()
 
