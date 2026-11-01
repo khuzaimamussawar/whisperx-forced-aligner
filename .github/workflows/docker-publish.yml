@@ -28,12 +28,14 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          # Code-only update on top of the last working July image (see Dockerfile.update for why).
+          # To rebuild everything from scratch, use `file: Dockerfile` after pinning whisperX and torch.
+          file: Dockerfile.update
+          build-args: |
+            BASE_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:f0c54454dcbbafe04d6aab0640645e52db91cac7
           push: true
-          # Replace YOUR_DOCKERHUB_USERNAME with your actual username
-          # `latest` only from main; a branch build gets its own tag so it can be tested without touching production
           tags: |
-            ${{ github.ref_name == 'main' && format('{0}/whisperx-forced-aligner:latest', secrets.DOCKERHUB_USERNAME) || '' }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:${{ github.ref_name }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
