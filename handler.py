@@ -8,9 +8,16 @@ Input:
   language       : string - default "en"
 
 Output:
-  words       : array   — [{word, start, end}] — perfectly transcribed and word-level aligned outputs
+  words       : array   — [{word, start, end}] — transcribed and word-level aligned
   duration    : float   — total audio duration in seconds
-  word_count  : int     — number of real words aligned
+  word_count  : int     — number of words returned
+  source_record_count : int
+  chunk_seconds, interpolated_words, align_errors, voiced_holes — diagnostics
+
+Long audio (minutes to 30+ min) is cut in pauses into ~CHUNK_SECONDS pieces; each piece is
+transcribed and aligned on its own, so Whisper never drops text and WhisperX never squeezes
+words into a wrong window. Any voiced stretch left without words is re-transcribed once with
+extra context, and reported in `voiced_holes` if it is still empty.
 """
 
 import os
@@ -22,6 +29,7 @@ import torch
 import whisperx
 
 from audio_pipeline import build_canonical_wav
+from chunking import repair_holes, tidy, transcribe_range
 
 # ─────────────────────────────────────────────
 # GLOBAL MODEL LOAD (once, stays hot between calls)
@@ -30,13 +38,15 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # `float16` is typically much faster and perfectly safe on RunPod GPUs.
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "float32"
 ASR_BATCH_SIZE = int(os.environ.get("WHISPER_BATCH_SIZE", "8"))
+CHUNK_SECONDS = float(os.environ.get("CHUNK_SECONDS", "20"))  # target piece length, cut in a pause
+CHUNK_MAX_SECONDS = float(os.environ.get("CHUNK_MAX_SECONDS", "24"))  # a piece is never longer than this
 
 print(f"[INIT] Using device: {DEVICE}")
 
 print("[INIT] Loading Whisper large-v3 ASR model...")
 _asr_model = whisperx.load_model(
-    "large-v3", 
-    device=DEVICE, 
+    "large-v3",
+    device=DEVICE,
     compute_type=COMPUTE_TYPE,
     download_root=os.environ.get("TORCH_HOME", "/app/torch_cache")
 )
@@ -75,6 +85,44 @@ def interpolate_missing_timestamps(words: list) -> list:
             w["start"] = prev["end"] if prev else (nxt["start"] if nxt else 0.0)
             w["end"]   = nxt["start"] if nxt else (prev["end"] if prev else 0.0)
     return words
+
+
+def spread_words(segments: list) -> list:
+    """Fallback if alignment fails for a piece: spread each segment's words evenly over its window."""
+    words = []
+    for seg in segments:
+        tokens = seg.get("text", "").split()
+        step = (seg["end"] - seg["start"]) / max(1, len(tokens))
+        for i, token in enumerate(tokens):
+            words.append({"word": token, "start": seg["start"] + i * step, "end": seg["start"] + (i + 1) * step})
+    return words
+
+
+def make_transcribe_align(language: str, stats: dict):
+    """Returns f(chunk_audio) -> [{word, start, end}] relative to the chunk, using the hot models."""
+    if language == "en":
+        align_model, align_meta = _align_model_en, _align_metadata_en
+    else:
+        # Load on-demand (slower first call for non-EN)
+        align_model, align_meta = whisperx.load_align_model(language_code=language, device=DEVICE)
+
+    def run(chunk):
+        segments = _asr_model.transcribe(chunk, batch_size=ASR_BATCH_SIZE, language=language).get("segments", [])
+        if not segments:
+            return []
+        try:
+            aligned = whisperx.align(segments, align_model, align_meta, chunk, DEVICE, return_char_alignments=False)
+            raw = [w for seg in aligned.get("segments", []) for w in seg.get("words", [])]
+        except Exception as e:
+            print(f"[ALIGN] piece alignment failed ({e}); spreading words over the segment windows")
+            stats["align_errors"] += 1
+            raw = spread_words(segments)
+        words = [{"word": w.get("word", "").strip(), "start": w.get("start"), "end": w.get("end")} for w in raw]
+        words = [w for w in words if w["word"]]
+        stats["interpolated"] += sum(1 for w in words if w["start"] is None or w["end"] is None)
+        return interpolate_missing_timestamps(words)
+
+    return run
 
 
 # ─────────────────────────────────────────────
@@ -121,76 +169,38 @@ def handler(job):
     except Exception as e:
         return {"error": f"Failed to build canonical audio: {e}"}
 
-    # ── 2. Whisper Transcription (Standard Pipeline) ────
+    # ── 2. Chunked transcription + alignment, then hole repair ────
+    stats = {"interpolated": 0, "align_errors": 0}
+    split = {"target": CHUNK_SECONDS, "hi": CHUNK_MAX_SECONDS}
     try:
-        print("[ALIGN] Running Whisper Transcription...")
-        # The default batch size is conservative for 16 GB serverless GPUs.
-        transcribe_result = _asr_model.transcribe(audio, batch_size=ASR_BATCH_SIZE, language=language)
-        transcript_segments = transcribe_result.get("segments", [])
-        if not transcript_segments:
+        run = make_transcribe_align(language, stats)
+        print(f"[ALIGN] Transcribing in pieces of ~{CHUNK_SECONDS:.0f}s cut in pauses...")
+        words = transcribe_range(audio, 0.0, audio_duration, run, **split)
+        if not words:
             return {"error": "No speech was detected in the audio"}
-        print(f"[ALIGN] Transcription done. Segments found: {len(transcript_segments)}")
+        words, holes = repair_holes(audio, words, run, **split)
+        words = tidy(words)
+        if holes:
+            print(f"[ALIGN] WARNING voiced stretches still without words: {holes}")
     except Exception as e:
-        return {"error": f"Transcription failed: {e}"}
+        return {"error": f"Transcription/alignment failed: {e}"}
 
-    # ── 3. Forced Alignment ───
-    try:
-        print("[ALIGN] Running Alignment...")
-        if language == "en":
-            align_model, align_meta = _align_model_en, _align_metadata_en
-        else:
-            # Load on-demand (slower first call for non-EN)
-            align_model, align_meta = whisperx.load_align_model(
-                language_code=language, device=DEVICE
-            )
-
-        result = whisperx.align(
-            transcript_segments,
-            align_model,
-            align_meta,
-            audio,
-            DEVICE,
-            return_char_alignments=False
-        )
-        print("[ALIGN] Alignment complete.")
-    except Exception as e:
-        return {"error": f"Alignment failed: {e}"}
-
-    # ── 4. Flatten words + interpolate nulls ────────
-    aligned_words = []
-    for seg in result.get("segments", []):
-        for w in seg.get("words", []):
-            word_text = w.get("word", "").strip()
-            if not word_text:
-                continue
-            aligned_words.append({
-                "word":  word_text,
-                "start": w.get("start"),
-                "end":   w.get("end")
-            })
-
-    aligned_words = interpolate_missing_timestamps(aligned_words)
-
-    # ── 5. Build output ─
-    output_words = []
-    for word in aligned_words:
-        w_start = word["start"] or 0.0
-        w_end   = word["end"]   or 0.0
-
-        output_words.append({
-            "word":  word["word"],
-            "start": round(w_start, 3),
-            "end":   round(w_end, 3)
-        })
-
-    real_word_count = len(output_words)
-    print(f"[DONE] Words: {real_word_count} aligned.")
+    # ── 3. Build output ─
+    output_words = [
+        {"word": w["word"], "start": round(w["start"], 3), "end": round(w["end"], 3)}
+        for w in words
+    ]
+    print(f"[DONE] Words: {len(output_words)} aligned.")
 
     return {
         "words":      output_words,
         "duration":   audio_duration,
-        "word_count": real_word_count,
-        "source_record_count": source_record_count
+        "word_count": len(output_words),
+        "source_record_count": source_record_count,
+        "chunk_seconds": CHUNK_SECONDS,
+        "interpolated_words": stats["interpolated"],
+        "align_errors": stats["align_errors"],
+        "voiced_holes": holes,
     }
 
 

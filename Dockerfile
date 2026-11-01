@@ -45,6 +45,7 @@ RUN pip install --no-cache-dir "git+https://github.com/m-bain/whisperX.git"
 # ── 5. Copy source code ──────────────────────────────────────────
 COPY download_models.py .
 COPY audio_pipeline.py .
+COPY chunking.py .
 COPY handler.py .
 
 # ── 6. Pre-bake models into image layer ──────────────────────────

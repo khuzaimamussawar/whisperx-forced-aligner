@@ -62,6 +62,22 @@ The old `audio_url` input remains available as a single-file compatibility fallb
 }
 ```
 
+## Chunked transcription (long audio)
+
+Whisper large-v3 in batched mode can silently drop text, and WhisperX squeezes words into Whisper's own
+segment windows, when it is fed minutes of continuous speech at once. So the canonical WAV is cut in pauses
+(never inside a word) into pieces of about `CHUNK_SECONDS` (never longer than `CHUNK_MAX_SECONDS`); each piece is
+transcribed and aligned on its own and its times are shifted back. Afterwards the audio is checked for voiced
+stretches with no word on them; each one is re-transcribed once with extra context (up to 2 passes). Anything
+still empty is returned in `voiced_holes` instead of being hidden. `interpolated_words` counts words whose times
+had to be invented, `align_errors` counts pieces that fell back to even spacing.
+
+Files of 5 to 30+ minutes work: the audio is decoded once (30 min is about 115 MB of float32), pieces run one
+after another, and the cost grows linearly with length. Set the RunPod endpoint's **Execution Timeout** to at
+least 1800 s (the default 600 s can be short for 30 minutes).
+
+Unit tests (no GPU needed): `python -m unittest tests.test_chunking -v`.
+
 ## Concurrency settings
 
 | Variable | Default | Behavior |
@@ -70,6 +86,8 @@ The old `audio_url` input remains available as a single-file compatibility fallb
 | `FFMPEG_CONCURRENCY` | `5` | Clamped to the required 4-6 concurrent processing jobs |
 | `FFMPEG_TIMEOUT_SECONDS` | `900` | Timeout for one record's FFmpeg job |
 | `WHISPER_BATCH_SIZE` | `8` | Whisper large-v3 transcription batch size |
+| `CHUNK_SECONDS` | `20` | Target length of each transcription piece (cut in a pause) |
+| `CHUNK_MAX_SECONDS` | `24` | A piece is never longer than this |
 
 ## Deployment
 
