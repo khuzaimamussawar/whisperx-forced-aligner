@@ -1,0 +1,15 @@
+# Update image: the last working image (built in July) + the current code.
+#
+# Why: the full Dockerfile installs whisperX unpinned ("git+https://github.com/m-bain/whisperX.git").
+# Today that pulls whisperX 3.8.7rc1, which needs torch~=2.8 and replaces the pinned torch 2.4.0+cu124,
+# so `python download_models.py` fails with "libcudart.so.13: cannot open shared object file" (torchaudio
+# no longer matches torch). The July image has a working PyTorch / whisperX / model stack, so code-only
+# changes start from it and just copy the Python files in.
+# The base is passed by the workflow: BASE_IMAGE=<dockerhub user>/whisperx-forced-aligner:<July commit sha>
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+COPY audio_pipeline.py chunking.py handler.py ./
+
+CMD ["python", "-u", "handler.py"]
