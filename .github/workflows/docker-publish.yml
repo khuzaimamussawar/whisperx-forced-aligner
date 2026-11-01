@@ -30,8 +30,10 @@ jobs:
           context: .
           push: true
           # Replace YOUR_DOCKERHUB_USERNAME with your actual username
+          # `latest` only from main; a branch build gets its own tag so it can be tested without touching production
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:latest
+            ${{ github.ref_name == 'main' && format('{0}/whisperx-forced-aligner:latest', secrets.DOCKERHUB_USERNAME) || '' }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:${{ github.ref_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-forced-aligner:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
